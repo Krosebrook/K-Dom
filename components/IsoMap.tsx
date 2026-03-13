@@ -360,11 +360,13 @@ interface Unit {
   squadMemberIds: number[]; // For officers
   formation: Formation; // For officers
   targetId?: number; // ID of enemy unit being attacked
+  targetBuilding?: {x: number, y: number}; // For enemies attacking buildings
+  lastAttackTime?: number; // For visual feedback
 }
 
 import { Instances, Instance } from '@react-three/drei';
 
-const UnitSystem = React.memo(({ grid }: { grid: Grid }) => {
+const UnitSystem = React.memo(({ grid, stats, onBuildingDestroyed }: { grid: Grid, stats?: any, onBuildingDestroyed?: (x: number, y: number) => void }) => {
     const unitsRef = useRef<Unit[]>([]);
     const [unitsState, setUnitsState] = useState<Unit[]>([]);
     
@@ -393,15 +395,97 @@ const UnitSystem = React.memo(({ grid }: { grid: Grid }) => {
                     });
                 }
             };
-            spawn('officer', 2);
-            spawn('soldier', 8);
-            spawn('peasant', 5);
+            spawn('officer', stats?.officers || 0);
+            spawn('soldier', stats?.soldiers || 0);
+            spawn('peasant', stats?.subjects || 5);
             spawn('enemy', 4);
             setUnitsState([...unitsRef.current]);
         }
-    }, []);
+    }, [stats?.officers, stats?.soldiers, stats?.subjects]);
 
-    // Calculate valid patrol points from defensive structures
+    // Handle spawning new units when stats change
+    useEffect(() => {
+        if (!stats) return;
+        
+        let changed = false;
+        let maxId = unitsRef.current.reduce((max, u) => Math.max(max, u.id), -1);
+        
+        const spawnNew = (type: UnitType, count: number) => {
+            const currentCount = unitsRef.current.filter(u => u.type === type).length;
+            if (currentCount < count) {
+                for (let i = 0; i < count - currentCount; i++) {
+                    // Try to find a Barracks for soldiers/officers, Keep for peasants
+                    let spawnX = Math.random() * GRID_SIZE;
+                    let spawnY = Math.random() * GRID_SIZE;
+                    
+                    const targetBuilding = (type === 'soldier' || type === 'officer') ? BuildingType.Barracks : BuildingType.Keep;
+                    const spawnPoints: {x: number, y: number}[] = [];
+                    grid.forEach(row => row.forEach(tile => {
+                        if (tile.buildingType === targetBuilding) {
+                            spawnPoints.push({x: tile.x, y: tile.y});
+                        }
+                    }));
+                    
+                    if (spawnPoints.length > 0) {
+                        const pt = spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
+                        spawnX = pt.x + (Math.random() - 0.5);
+                        spawnY = pt.y + (Math.random() - 0.5);
+                    }
+                    
+                    unitsRef.current.push({
+                        id: ++maxId,
+                        type,
+                        x: spawnX, y: spawnY,
+                        tx: spawnX, ty: spawnY,
+                        state: 'idle',
+                        hp: 100,
+                        squadMemberIds: [],
+                        formation: 'wedge'
+                    });
+                    changed = true;
+                }
+            }
+        };
+        
+        spawnNew('officer', stats.officers);
+        spawnNew('soldier', stats.soldiers);
+        spawnNew('peasant', stats.subjects);
+        
+        if (changed) {
+            setUnitsState([...unitsRef.current]);
+        }
+    }, [stats?.officers, stats?.soldiers, stats?.subjects, grid]);
+
+    // Periodic Enemy Spawning
+    useEffect(() => {
+        const interval = setInterval(() => {
+            if (unitsRef.current.filter(u => u.type === 'enemy').length < 5) {
+                let maxId = unitsRef.current.reduce((max, u) => Math.max(max, u.id), -1);
+                
+                // Spawn at edges
+                let spawnX = Math.random() > 0.5 ? 0 : GRID_SIZE - 1;
+                let spawnY = Math.random() * GRID_SIZE;
+                if (Math.random() > 0.5) {
+                    spawnX = Math.random() * GRID_SIZE;
+                    spawnY = Math.random() > 0.5 ? 0 : GRID_SIZE - 1;
+                }
+                
+                unitsRef.current.push({
+                    id: ++maxId,
+                    type: 'enemy',
+                    x: spawnX, y: spawnY,
+                    tx: spawnX, ty: spawnY,
+                    state: 'moving',
+                    hp: 100,
+                    squadMemberIds: [],
+                    formation: 'wedge'
+                });
+                setUnitsState([...unitsRef.current]);
+            }
+        }, 10000); // Try to spawn an enemy every 10 seconds
+        
+        return () => clearInterval(interval);
+    }, []);
     const patrolPoints = useMemo(() => {
         const points: {x: number, y: number}[] = [];
         grid.forEach(row => row.forEach(tile => {
@@ -485,6 +569,14 @@ const UnitSystem = React.memo(({ grid }: { grid: Grid }) => {
                             if (target) {
                                 u.tx = target.x + (Math.random()-0.5); 
                                 u.ty = target.y + (Math.random()-0.5);
+                                const distToTarget = Math.hypot(u.x - target.x, u.y - target.y);
+                                if (distToTarget < ATTACK_RANGE) {
+                                    u.state = 'attacking';
+                                    u.targetId = target.id;
+                                } else {
+                                    u.state = 'moving';
+                                    u.targetId = undefined;
+                                }
                             }
                         } else {
                             const squadIndex = leader.squadMemberIds.indexOf(u.id);
@@ -493,6 +585,8 @@ const UnitSystem = React.memo(({ grid }: { grid: Grid }) => {
                             const offset = getFormationOffset(squadIndex, leader.formation, dirX, dirY);
                             u.tx = leader.x + offset.x;
                             u.ty = leader.y + offset.y;
+                            u.state = 'moving';
+                            u.targetId = undefined;
                         }
                     } else {
                         const { target: enemy, dist } = findNearest(u, (o) => o.type === 'enemy');
@@ -535,15 +629,105 @@ const UnitSystem = React.memo(({ grid }: { grid: Grid }) => {
                 }
 
                 if (u.type === 'enemy') {
-                    const { target: prey } = findNearest(u, (o) => o.type !== 'enemy');
-                    if (prey) {
+                    const { target: prey, dist } = findNearest(u, (o) => o.type !== 'enemy');
+                    if (prey && dist < SIGHT_RANGE * 2) {
                         u.tx = prey.x; u.ty = prey.y;
+                        if (dist < ATTACK_RANGE) {
+                            u.state = 'attacking';
+                            u.targetId = prey.id;
+                            u.targetBuilding = undefined;
+                        } else {
+                            u.state = 'moving';
+                            u.targetId = undefined;
+                        }
+                    } else {
+                        // Find nearest building
+                        let nearestBuilding: {x: number, y: number} | null = null;
+                        let minDB = Infinity;
+                        grid.forEach(row => row.forEach(tile => {
+                            if (tile.buildingType !== BuildingType.None && tile.buildingType !== BuildingType.Path) {
+                                const d = Math.hypot(u.x - tile.x, u.y - tile.y);
+                                if (d < minDB) { minDB = d; nearestBuilding = {x: tile.x, y: tile.y}; }
+                            }
+                        }));
+                        
+                        if (nearestBuilding) {
+                            u.tx = nearestBuilding.x; u.ty = nearestBuilding.y;
+                            if (minDB < ATTACK_RANGE) {
+                                u.state = 'attacking';
+                                u.targetBuilding = nearestBuilding;
+                                u.targetId = undefined;
+                            } else {
+                                u.state = 'moving';
+                                u.targetBuilding = undefined;
+                            }
+                        } else {
+                            // Wander
+                            if (Math.hypot(u.x - u.tx, u.y - u.ty) < 1) {
+                                u.tx = Math.max(0, Math.min(GRID_SIZE, u.x + (Math.random()-0.5)*10));
+                                u.ty = Math.max(0, Math.min(GRID_SIZE, u.y + (Math.random()-0.5)*10));
+                            }
+                            u.state = 'moving';
+                        }
                     }
                 }
             });
             // Only update state if array length changes to avoid unnecessary re-renders
             if (unitsState.length !== unitsRef.current.length) {
                 setUnitsState([...unitsRef.current]);
+            }
+        }
+
+        if (Math.floor(frame) % 60 === 0) {
+            // Combat logic (1 attack per second)
+            let unitsDied = false;
+            let damageDealt = false;
+            unitsRef.current.forEach(u => {
+                if (u.state === 'attacking') {
+                    if (u.targetId !== undefined) {
+                        const target = unitsRef.current.find(t => t.id === u.targetId);
+                        if (target) {
+                            const dist = Math.hypot(u.x - target.x, u.y - target.y);
+                            if (dist < ATTACK_RANGE) {
+                                // Deal damage
+                                const damage = u.type === 'officer' ? 25 : (u.type === 'soldier' ? 15 : 10);
+                                target.hp -= damage;
+                                damageDealt = true;
+                                
+                                // Visual feedback
+                                u.lastAttackTime = t;
+                            }
+                        } else {
+                            u.state = 'idle';
+                            u.targetId = undefined;
+                        }
+                    } else if (u.targetBuilding) {
+                        const dist = Math.hypot(u.x - u.targetBuilding.x, u.y - u.targetBuilding.y);
+                        if (dist < ATTACK_RANGE) {
+                            // Visual feedback
+                            u.lastAttackTime = t;
+                            
+                            // 10% chance to destroy building per hit
+                            if (Math.random() < 0.1 && onBuildingDestroyed) {
+                                onBuildingDestroyed(u.targetBuilding.x, u.targetBuilding.y);
+                                u.state = 'idle';
+                                u.targetBuilding = undefined;
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Remove dead units
+            const aliveUnits = unitsRef.current.filter(u => u.hp > 0);
+            if (aliveUnits.length < unitsRef.current.length) {
+                unitsRef.current = aliveUnits;
+                unitsDied = true;
+            }
+            
+            if (unitsDied || damageDealt) {
+                // Deep copy to trigger re-render of HP bars
+                setUnitsState(unitsRef.current.map(u => ({...u})));
             }
         }
 
@@ -581,6 +765,10 @@ const UnitSystem = React.memo(({ grid }: { grid: Grid }) => {
                     <UnitHead key={`head-${u.id}`} unit={u} index={i} />
                 ))}
             </Instances>
+            {/* HP Bars */}
+            {unitsState.map(u => (
+                <UnitHPBar key={`hp-${u.id}`} unit={u} />
+            ))}
         </group>
     );
 });
@@ -595,7 +783,13 @@ const UnitBody = ({ unit, index }: { unit: Unit, index: number }) => {
         
         const isMoving = Math.hypot(unit.tx - unit.x, unit.ty - unit.y) > 0.1;
         const bob = isMoving ? Math.abs(Math.sin(t * 15 + index)) * 0.05 : 0;
-        const h = 0.2 + bob;
+        
+        let jump = 0;
+        if (unit.lastAttackTime && t - unit.lastAttackTime < 0.2) {
+            jump = Math.sin((t - unit.lastAttackTime) * 5 * Math.PI) * 0.2;
+        }
+        
+        const h = 0.2 + bob + jump;
         
         ref.current.position.set(wx, h, wz);
         
@@ -621,6 +815,28 @@ const UnitBody = ({ unit, index }: { unit: Unit, index: number }) => {
     return <Instance ref={ref} color={color} />;
 };
 
+const UnitHPBar = ({ unit }: { unit: Unit }) => {
+    const ref = useRef<any>(null);
+    
+    useFrame(() => {
+        if (!ref.current) return;
+        const [wx, _, wz] = gridToWorld(unit.x, unit.y);
+        ref.current.position.set(wx, 1.2, wz);
+    });
+    
+    if (unit.hp >= 100) return null;
+    
+    return (
+        <group ref={ref}>
+            <Html center style={{ pointerEvents: 'none' }}>
+                <div className="w-8 h-1.5 bg-red-900 rounded-full overflow-hidden border border-black/50">
+                    <div className="h-full bg-green-500" style={{ width: `${Math.max(0, unit.hp)}%` }} />
+                </div>
+            </Html>
+        </group>
+    );
+};
+
 const UnitHead = ({ unit, index }: { unit: Unit, index: number }) => {
     const ref = useRef<any>(null);
     
@@ -632,12 +848,17 @@ const UnitHead = ({ unit, index }: { unit: Unit, index: number }) => {
         const isMoving = Math.hypot(unit.tx - unit.x, unit.ty - unit.y) > 0.1;
         const bob = isMoving ? Math.abs(Math.sin(t * 15 + index)) * 0.05 : 0;
         
+        let jump = 0;
+        if (unit.lastAttackTime && t - unit.lastAttackTime < 0.2) {
+            jump = Math.sin((t - unit.lastAttackTime) * 5 * Math.PI) * 0.2;
+        }
+        
         let s = 1.0;
         if (unit.type === 'officer') s = 1.2;
         if (unit.type === 'peasant') s = 0.9;
 
         const bodyHeight = 0.4 * s;
-        const h = 0.2 + bob + (bodyHeight / 2) + (0.25 * s / 2); // Position on top of body
+        const h = 0.2 + bob + jump + (bodyHeight / 2) + (0.25 * s / 2); // Position on top of body
         
         ref.current.position.set(wx, h, wz);
         
@@ -661,7 +882,7 @@ const UnitHead = ({ unit, index }: { unit: Unit, index: number }) => {
 
 // --- Main View ---
 
-export default function IsoMap({ grid, onTileClick, hoveredTool, previewRotation, timeOfDay, season, floatingTexts }: any) {
+export default function IsoMap({ grid, stats, onTileClick, hoveredTool, previewRotation, timeOfDay, season, floatingTexts, onBuildingDestroyed }: any) {
   const [hoveredTile, setHoveredTile] = useState<{x: number, y: number} | null>(null);
 
   // Re-create textures when season changes
@@ -778,7 +999,7 @@ export default function IsoMap({ grid, onTileClick, hoveredTool, previewRotation
             }))}
         </group>
         <NatureSystem grid={grid} materials={materials} season={season} />
-        <UnitSystem grid={grid} />
+        <UnitSystem grid={grid} stats={stats} onBuildingDestroyed={onBuildingDestroyed} />
 
         {/* Floating Text */}
         {floatingTexts.map((ft: FloatingText) => {

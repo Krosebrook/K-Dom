@@ -345,12 +345,17 @@ function App() {
       }>
         <IsoMap 
           grid={grid} 
+          stats={stats}
           onTileClick={handleTileClick} 
           hoveredTool={selectedTool} 
           previewRotation={previewRotation} 
           timeOfDay={timeOfDay}
           season={stats.season}
           floatingTexts={floatingTexts}
+          onBuildingDestroyed={(x: number, y: number) => {
+            setGrid(prev => prev.map(r => r.map(c => (c.x === x && c.y === y) ? { ...c, buildingType: BuildingType.None, level: 1 } : c)));
+            spawnFloatingText(x, y, "DESTROYED!", "#ef4444");
+          }}
         />
       </Suspense>
       
