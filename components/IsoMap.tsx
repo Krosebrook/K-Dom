@@ -753,7 +753,7 @@ const UnitSystem = React.memo(({ grid, stats, onBuildingDestroyed }: { grid: Gri
             <Instances limit={100} castShadow receiveShadow>
                 <boxGeometry args={[0.3, 0.4, 0.2]} />
                 <meshStandardMaterial roughness={0.8} metalness={0.1} />
-                {unitsState.map((u, i) => (
+                {unitsState.map((u: Unit, i: number) => (
                     <UnitBody key={`body-${u.id}`} unit={u} index={i} />
                 ))}
             </Instances>
@@ -761,19 +761,19 @@ const UnitSystem = React.memo(({ grid, stats, onBuildingDestroyed }: { grid: Gri
             <Instances limit={100} castShadow receiveShadow>
                 <boxGeometry args={[0.25, 0.25, 0.25]} />
                 <meshStandardMaterial roughness={0.6} metalness={0.1} />
-                {unitsState.map((u, i) => (
+                {unitsState.map((u: Unit, i: number) => (
                     <UnitHead key={`head-${u.id}`} unit={u} index={i} />
                 ))}
             </Instances>
             {/* HP Bars */}
-            {unitsState.map(u => (
+            {unitsState.map((u: Unit) => (
                 <UnitHPBar key={`hp-${u.id}`} unit={u} />
             ))}
         </group>
     );
 });
 
-const UnitBody = ({ unit, index }: { unit: Unit, index: number }) => {
+const UnitBody: React.FC<{ unit: Unit; index: number }> = ({ unit, index }) => {
     const ref = useRef<any>(null);
     
     useFrame((state) => {
@@ -815,7 +815,7 @@ const UnitBody = ({ unit, index }: { unit: Unit, index: number }) => {
     return <Instance ref={ref} color={color} />;
 };
 
-const UnitHPBar = ({ unit }: { unit: Unit }) => {
+const UnitHPBar: React.FC<{ unit: Unit }> = ({ unit }) => {
     const ref = useRef<any>(null);
     
     useFrame(() => {
@@ -837,7 +837,7 @@ const UnitHPBar = ({ unit }: { unit: Unit }) => {
     );
 };
 
-const UnitHead = ({ unit, index }: { unit: Unit, index: number }) => {
+const UnitHead: React.FC<{ unit: Unit; index: number }> = ({ unit, index }) => {
     const ref = useRef<any>(null);
     
     useFrame((state) => {
